@@ -1,0 +1,16 @@
+{
+  "name": "x402-nostr-relay",
+  "version": "0.1.0",
+  "description": "A Nostr relay that gates EVENT writes behind x402 sBTC micropayments",
+  "type": "module",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test tests/relay.test.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "keywords": ["nostr", "x402", "sbtc", "relay", "bitcoin"],
+  "license": "MIT"
+}
