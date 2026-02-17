@@ -64,20 +64,13 @@ export class Relay {
 
     switch (type) {
       case 'EVENT': {
-        // Over WebSocket, we accept events directly (no x402 gate).
-        // The x402 gate is on the HTTP endpoint.
-        // For WS, we can either reject or accept — design says HTTP for publishing,
-        // but let's accept WS events too for standard Nostr client compat.
-        const event = msg[1];
-        if (!event || !event.id || !event.pubkey || event.kind == null) {
-          ws.send(JSON.stringify(['OK', event?.id || '', false, 'invalid: missing fields']));
-          return;
-        }
-        const added = this.store.add(event);
-        ws.send(JSON.stringify(['OK', event.id, true, '']));
-        if (added) {
-          this._broadcast(event);
-        }
+        const eventId = msg[1]?.id || '';
+        ws.send(JSON.stringify([
+          'OK',
+          eventId,
+          false,
+          'payment-required: publish via HTTP POST /api/events',
+        ]));
         break;
       }
 

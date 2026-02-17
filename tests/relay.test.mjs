@@ -6,7 +6,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { matchFilter, matchFilters } from '../src/filters.mjs';
 import { EventStore } from '../src/store.mjs';
-import { build402Response, getPrice } from '../src/x402.mjs';
+import { Relay } from '../src/relay.mjs';
+import { build402Response, getPrice, verifyPayment } from '../src/x402.mjs';
 
 const makeEvent = (overrides = {}) => ({
   id: 'abc123def456',
@@ -123,6 +124,72 @@ describe('x402', () => {
     assert.equal(payment.scheme, 'x402');
     assert.equal(payment.asset, 'sbtc');
     assert.equal(payment.maxAmountRequired, '10');
+  });
+
+  it('rejects underpaid token_transfer transactions', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        tx_status: 'success',
+        tx_type: 'token_transfer',
+        token_transfer: {
+          recipient_address: 'SP16H0KE0BPR4XNQ64115V5Y1V3XTPGMWG5YPC9TR',
+          amount: '1',
+        },
+      }),
+    });
+
+    try {
+      const result = await verifyPayment('0x-underpay-test', 50);
+      assert.equal(result.valid, false);
+      assert.match(result.error, /Insufficient payment/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects unknown successful transaction types', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        tx_status: 'success',
+        tx_type: 'smart_contract',
+      }),
+    });
+
+    try {
+      const result = await verifyPayment('0x-unknown-type-test', 10);
+      assert.equal(result.valid, false);
+      assert.match(result.error, /Unsupported transaction type/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('Relay', () => {
+  it('rejects EVENT writes over websocket and preserves store state', () => {
+    const store = new EventStore();
+    const relay = new Relay({ store });
+    const ws = {
+      sent: [],
+      readyState: 1,
+      send(msg) {
+        this.sent.push(msg);
+      },
+    };
+    relay.subscriptions.set(ws, new Map());
+
+    relay._handleMessage(ws, ['EVENT', makeEvent()]);
+
+    assert.equal(store.size, 0);
+    assert.equal(ws.sent.length, 1);
+    assert.deepEqual(
+      JSON.parse(ws.sent[0]),
+      ['OK', 'abc123def456', false, 'payment-required: publish via HTTP POST /api/events']
+    );
   });
 });
 

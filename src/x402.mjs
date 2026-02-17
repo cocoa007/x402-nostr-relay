@@ -22,6 +22,20 @@ const PRICING = {
 /** Set of verified tx IDs to prevent replay */
 const usedTxIds = new Set();
 
+function normalizeTxId(txId) {
+  if (typeof txId !== 'string') return '';
+  return txId.trim().toLowerCase();
+}
+
+function parseAmount(value) {
+  try {
+    const amount = BigInt(value);
+    return amount >= 0n ? amount : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get the price in sats for an event kind.
  */
@@ -71,17 +85,18 @@ export function build402Response(event) {
  * @returns {Promise<{valid: boolean, error?: string}>}
  */
 export async function verifyPayment(txId, requiredSats) {
-  if (!txId || typeof txId !== 'string') {
+  const normalizedTxId = normalizeTxId(txId);
+  if (!normalizedTxId) {
     return { valid: false, error: 'Missing transaction ID' };
   }
 
   // Prevent replay
-  if (usedTxIds.has(txId)) {
+  if (usedTxIds.has(normalizedTxId)) {
     return { valid: false, error: 'Transaction already used' };
   }
 
   try {
-    const resp = await fetch(`${STACKS_API}/extended/v1/tx/${txId}`);
+    const resp = await fetch(`${STACKS_API}/extended/v1/tx/${normalizedTxId}`);
     if (!resp.ok) {
       return { valid: false, error: `Transaction not found: ${resp.status}` };
     }
@@ -93,39 +108,40 @@ export async function verifyPayment(txId, requiredSats) {
       return { valid: false, error: `Transaction status: ${tx.tx_status}` };
     }
 
-    // Check it's a contract call to sBTC or a token transfer
-    // For MVP, accept if tx is successful and sent to our address
-    // More rigorous checks can be added in Phase 2
+    const minimumAmount = BigInt(Math.max(0, Math.trunc(Number(requiredSats) || 0)));
+    let paidAmount = null;
 
-    // Check for STX transfer to our address
     if (tx.tx_type === 'token_transfer') {
       if (tx.token_transfer?.recipient_address !== PAY_TO) {
         return { valid: false, error: 'Payment not sent to relay address' };
       }
-      const amountMicroStx = BigInt(tx.token_transfer.amount);
-      // 1 STX = ~some sats equivalent — for MVP accept any STX transfer
-      // In production, would check sBTC contract call specifically
-    }
-
-    // For contract calls (sBTC transfers), check post_conditions or events
-    if (tx.tx_type === 'contract_call') {
-      // Look for sBTC transfer in events
+      paidAmount = parseAmount(tx.token_transfer?.amount);
+      if (paidAmount == null) {
+        return { valid: false, error: 'Invalid transfer amount' };
+      }
+    } else if (tx.tx_type === 'contract_call') {
       const events = tx.events || [];
-      const transferToUs = events.find(e =>
-        e.event_type === 'fungible_token_transfer' &&
-        e.asset?.recipient === PAY_TO
+      const transferToUs = events.find((event) =>
+        event.event_type === 'fungible_token_transfer' &&
+        event.asset?.recipient === PAY_TO
       );
       if (!transferToUs) {
         return { valid: false, error: 'No sBTC transfer to relay found in tx' };
       }
-      const amount = BigInt(transferToUs.asset.amount || '0');
-      if (amount < BigInt(requiredSats)) {
-        return { valid: false, error: `Insufficient payment: ${amount} < ${requiredSats}` };
+      paidAmount = parseAmount(transferToUs.asset?.amount);
+      if (paidAmount == null) {
+        return { valid: false, error: 'Invalid transfer amount' };
       }
+    } else {
+      return { valid: false, error: `Unsupported transaction type: ${tx.tx_type}` };
+    }
+
+    if (paidAmount < minimumAmount) {
+      return { valid: false, error: `Insufficient payment: ${paidAmount} < ${minimumAmount}` };
     }
 
     // Mark as used
-    usedTxIds.add(txId);
+    usedTxIds.add(normalizedTxId);
     return { valid: true };
   } catch (err) {
     return { valid: false, error: `Verification failed: ${err.message}` };
