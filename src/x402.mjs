@@ -151,7 +151,8 @@ export async function verifyPayment(txId, requiredSats) {
     } else if (tx.tx_type === 'contract_call') {
       const events = tx.events || [];
       const transferToUs = events.find((event) =>
-        event.event_type === 'fungible_token_transfer' &&
+        (event.event_type === 'fungible_token_transfer' || event.event_type === 'fungible_token_asset') &&
+        event.asset?.asset_event_type === 'transfer' &&
         event.asset?.recipient === PAY_TO
       );
       if (!transferToUs) {
