@@ -5,16 +5,22 @@
  * 1. Client POSTs event to /api/events
  * 2. Without valid payment → 402 with x402 headers
  * 3. With payment proof (tx ID) → verify on Stacks API → accept
+ * 
+ * If the event has a 'p' tag (targets a recipient), an extra 100 sats
+ * is added to the price and forwarded to the recipient.
  */
 
-const PAY_TO = 'SP16H0KE0BPR4XNQ64115V5Y1V3XTPGMWG5YPC9TR';
-const STACKS_API = 'https://api.mainnet.hiro.so';
+const PAY_TO = process.env.PAY_TO || 'SP16H0KE0BPR4XNQ64115V5Y1V3XTPGMWG5YPC9TR';
+const STACKS_API = process.env.STACKS_API || 'https://api.mainnet.hiro.so';
 
-// Pricing by event kind (in sats)
-const PRICING = {
-  0: 50,    // profile metadata
-  1: 10,    // text note
-  4: 5,     // encrypted DM
+const RELAY_FEE = 5;          // sats — base relay fee for any event
+const RECIPIENT_AMOUNT = 100;  // sats — forwarded to recipient when event has p tag
+
+// Base pricing by event kind (in sats) — relay fee only
+const BASE_PRICING = {
+  0: 50,     // profile metadata
+  1: 10,     // text note
+  4: 5,      // encrypted DM
   30023: 25, // long-form
   default: 10,
 };
@@ -37,17 +43,43 @@ function parseAmount(value) {
 }
 
 /**
- * Get the price in sats for an event kind.
+ * Extract the first 'p' tag hex pubkey from an event, if any.
  */
-export function getPrice(kind) {
-  return PRICING[kind] ?? PRICING.default;
+export function getRecipient(event) {
+  if (!event?.tags) return null;
+  const pTag = event.tags.find(t => Array.isArray(t) && t[0] === 'p' && t[1]);
+  return pTag ? pTag[1] : null;
+}
+
+/**
+ * Get the base relay price in sats for an event kind.
+ */
+export function getBasePrice(kind) {
+  return BASE_PRICING[kind] ?? BASE_PRICING.default;
+}
+
+/**
+ * Get the total price for an event.
+ * If it targets a recipient (p tag), adds RECIPIENT_AMOUNT on top.
+ */
+export function getPrice(event) {
+  const base = getBasePrice(typeof event === 'number' ? event : event.kind);
+  const recipient = typeof event === 'number' ? null : getRecipient(event);
+  return recipient ? base + RECIPIENT_AMOUNT : base;
 }
 
 /**
  * Build the 402 response with x402 payment details.
  */
 export function build402Response(event) {
-  const priceSats = getPrice(event.kind);
+  const recipient = getRecipient(event);
+  const basePrice = getBasePrice(event.kind);
+  const totalPrice = recipient ? basePrice + RECIPIENT_AMOUNT : basePrice;
+
+  const description = recipient
+    ? `Publish kind ${event.kind} event to x402 Nostr relay (${basePrice} sats relay + ${RECIPIENT_AMOUNT} sats forwarded to recipient)`
+    : `Publish kind ${event.kind} event to x402 Nostr relay`;
+
   return {
     status: 402,
     headers: {
@@ -56,8 +88,8 @@ export function build402Response(event) {
         network: 'stacks',
         asset: 'sbtc',
         payTo: PAY_TO,
-        maxAmountRequired: String(priceSats),
-        description: `Publish kind ${event.kind} event to x402 Nostr relay`,
+        maxAmountRequired: String(totalPrice),
+        description,
         mimeType: 'application/json',
         resource: '/api/events',
       }),
@@ -65,24 +97,22 @@ export function build402Response(event) {
     },
     body: {
       error: 'Payment Required',
-      price: priceSats,
+      price: totalPrice,
       asset: 'sBTC',
       payTo: PAY_TO,
+      ...(recipient ? {
+        breakdown: {
+          relayFee: basePrice,
+          recipientForward: RECIPIENT_AMOUNT,
+          recipientPubkey: recipient,
+        },
+      } : {}),
     },
   };
 }
 
 /**
  * Verify an sBTC payment transaction on the Stacks API.
- * Checks that:
- * 1. Transaction exists and is successful
- * 2. It's an sBTC transfer to our address
- * 3. Amount >= required
- * 4. Tx ID hasn't been reused
- * 
- * @param {string} txId - Stacks transaction ID
- * @param {number} requiredSats - Minimum payment in sats
- * @returns {Promise<{valid: boolean, error?: string}>}
  */
 export async function verifyPayment(txId, requiredSats) {
   const normalizedTxId = normalizeTxId(txId);
@@ -90,7 +120,6 @@ export async function verifyPayment(txId, requiredSats) {
     return { valid: false, error: 'Missing transaction ID' };
   }
 
-  // Prevent replay
   if (usedTxIds.has(normalizedTxId)) {
     return { valid: false, error: 'Transaction already used' };
   }
@@ -103,7 +132,6 @@ export async function verifyPayment(txId, requiredSats) {
 
     const tx = await resp.json();
 
-    // Must be successful
     if (tx.tx_status !== 'success') {
       return { valid: false, error: `Transaction status: ${tx.tx_status}` };
     }
@@ -140,7 +168,6 @@ export async function verifyPayment(txId, requiredSats) {
       return { valid: false, error: `Insufficient payment: ${paidAmount} < ${minimumAmount}` };
     }
 
-    // Mark as used
     usedTxIds.add(normalizedTxId);
     return { valid: true };
   } catch (err) {
@@ -159,7 +186,8 @@ export function extractPayment(headers) {
     const payment = JSON.parse(paymentHeader);
     return payment.txId || payment.transactionId || null;
   } catch {
-    // Maybe it's just the raw tx ID
     return paymentHeader;
   }
 }
+
+export { PAY_TO, RELAY_FEE, RECIPIENT_AMOUNT };
