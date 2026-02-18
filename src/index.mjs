@@ -1,12 +1,11 @@
 /**
- * x402 Nostr Relay — Entry point.
+ * x402 Nostr Relay v0.6.0 — Entry point.
  * 
- * Single-port: HTTP + WebSocket on the same port.
- * - WebSocket: NIP-01 relay (free reads, writes rejected → use HTTP)
- * - HTTP POST /api/events: x402 gated EVENT publishing
- *     → events with 'p' tags cost extra; surplus forwarded to recipient
- * - HTTP GET /api/payouts: pending recipient payouts
- * - HTTP GET /: relay info
+ * - SQLite persistent storage (survives restarts)
+ * - Auto-forwards sBTC to recipients via p-tag
+ * - Publishes events to public relays as backup
+ * - WebSocket: NIP-01 free reads
+ * - HTTP POST /api/events: x402 gated writes
  */
 
 import http from 'node:http';
@@ -23,6 +22,12 @@ const PORT = parseInt(process.env.PORT || '8080');
 const store = new EventStore();
 const relay = new Relay({ store });
 
+// Public relays to mirror events to
+const BACKUP_RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+];
+
 function json(res, status, data, extraHeaders = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders });
   res.end(JSON.stringify(data));
@@ -34,8 +39,29 @@ async function readBody(req) {
   return body;
 }
 
+/**
+ * Mirror an event to public backup relays.
+ * Best-effort, non-blocking.
+ */
+async function mirrorToPublicRelays(event) {
+  const { WebSocket } = await import('ws');
+
+  for (const relayUrl of BACKUP_RELAYS) {
+    try {
+      const ws = new WebSocket(relayUrl);
+      const timeout = setTimeout(() => { try { ws.close(); } catch {} }, 10000);
+
+      ws.on('open', () => {
+        ws.send(JSON.stringify(['EVENT', event]));
+        setTimeout(() => { clearTimeout(timeout); ws.close(); }, 2000);
+      });
+
+      ws.on('error', () => { clearTimeout(timeout); });
+    } catch {}
+  }
+}
+
 const httpServer = http.createServer(async (req, res) => {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Payment, X-Payment-Response');
@@ -45,15 +71,17 @@ const httpServer = http.createServer(async (req, res) => {
 
   // GET / — relay info
   if (req.method === 'GET' && req.url === '/') {
+    const balance = await getRelayBalance().catch(() => 0);
     json(res, 200, {
       name: 'x402-nostr-relay',
-      version: '0.5.0',
-      description: 'Nostr relay with x402 sBTC payment gate. Events targeting a recipient (p tag) include a forwarding fee — recipient gets paid automatically.',
+      version: '0.6.0',
+      description: 'Nostr relay with x402 sBTC payment gate. Tag someone → they get paid.',
       supported_nips: [1],
       events_stored: store.size,
       wallet: {
         configured: isWalletConfigured(),
         address: getRelayAddress(),
+        sbtcBalance: balance,
       },
       endpoints: {
         ws: 'wss://x402-nostr-relay.fly.dev',
@@ -61,22 +89,38 @@ const httpServer = http.createServer(async (req, res) => {
         payouts: 'https://x402-nostr-relay.fly.dev/api/payouts',
       },
       pricing: {
-        description: 'Base relay fee by event kind. Events with a p tag add 100 sats forwarded to recipient.',
-        relayFee: 'varies by kind (5-50 sats)',
+        description: 'Base relay fee by kind. Events with p-tag add 100 sats forwarded to recipient.',
         recipientForward: RECIPIENT_AMOUNT,
         examples: {
           'kind 1 (text note)': '10 sats',
-          'kind 1 with p tag': `${10 + RECIPIENT_AMOUNT} sats (10 relay + ${RECIPIENT_AMOUNT} to recipient)`,
-          'kind 4 (DM)': `${5 + RECIPIENT_AMOUNT} sats (5 relay + ${RECIPIENT_AMOUNT} to recipient)`,
+          'kind 1 with p tag': '110 sats (10 relay + 100 to recipient)',
+          'kind 4 (DM)': '105 sats (5 relay + 100 to recipient)',
         },
       },
+      storage: 'persistent (SQLite)',
+      backupRelays: BACKUP_RELAYS,
     });
     return;
   }
 
-  // GET /api/payouts — pending recipient payouts
+  // GET /api/payouts
   if (req.method === 'GET' && req.url === '/api/payouts') {
-    json(res, 200, { payouts: getPendingPayouts() });
+    json(res, 200, { payouts: store.getAllPayouts?.() || getPendingPayouts() });
+    return;
+  }
+
+  // GET /api/events?authors=...&kinds=...&limit=... — query stored events
+  if (req.method === 'GET' && req.url.startsWith('/api/events')) {
+    const url = new URL(req.url, 'http://localhost');
+    const filter = {};
+    if (url.searchParams.get('authors')) filter.authors = url.searchParams.get('authors').split(',');
+    if (url.searchParams.get('kinds')) filter.kinds = url.searchParams.get('kinds').split(',').map(Number);
+    if (url.searchParams.get('ids')) filter.ids = url.searchParams.get('ids').split(',');
+    if (url.searchParams.get('limit')) filter.limit = parseInt(url.searchParams.get('limit'));
+    if (url.searchParams.get('#p')) filter['#p'] = url.searchParams.get('#p').split(',');
+
+    const events = store.query(filter);
+    json(res, 200, { events, count: events.length });
     return;
   }
 
@@ -101,7 +145,7 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
 
-    // Verify payment — price depends on whether event has a recipient
+    // Verify payment
     const totalPrice = getPrice(event);
     const verification = await verifyPayment(txId, totalPrice);
 
@@ -110,10 +154,16 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
 
-    // Store and broadcast
+    // Persist tx as used (SQLite)
+    store.markTxUsed?.(txId);
+
+    // Store and broadcast locally
     const added = relay.injectEvent(event);
 
-    // If event targets a recipient, look up their payment address and record payout
+    // Mirror to public relays (async, best-effort)
+    mirrorToPublicRelays(event).catch(() => {});
+
+    // Handle recipient forwarding
     const recipientHex = getRecipient(event);
     let forwarding = null;
 
@@ -123,18 +173,23 @@ const httpServer = http.createServer(async (req, res) => {
         paymentAddress = await resolvePaymentAddress(recipientHex);
       } catch {}
 
-      const payout = recordPendingPayout(recipientHex, paymentAddress, RECIPIENT_AMOUNT, event.id);
+      // Record payout in SQLite
+      store.recordPayout?.(recipientHex, RECIPIENT_AMOUNT, event.id, paymentAddress);
 
-      // Auto-forward if recipient has an STX address and wallet is configured
+      // Auto-forward if STX address found and wallet configured
       if (paymentAddress?.type === 'stx' && isWalletConfigured()) {
         const fwd = await forwardSbtc(paymentAddress.address, RECIPIENT_AMOUNT);
-        forwarding = fwd.success
-          ? { status: 'sent', txId: fwd.txId, address: paymentAddress.address, amount: RECIPIENT_AMOUNT }
-          : { status: 'failed', error: fwd.error, address: paymentAddress.address, amount: RECIPIENT_AMOUNT, queued: true };
+        if (fwd.success) {
+          store.updatePayoutTx?.(event.id, fwd.txId, 'sent');
+          forwarding = { status: 'sent', txId: fwd.txId, address: paymentAddress.address, amount: RECIPIENT_AMOUNT };
+        } else {
+          store.updatePayoutTx?.(event.id, null, 'failed');
+          forwarding = { status: 'failed', error: fwd.error, address: paymentAddress.address, amount: RECIPIENT_AMOUNT };
+        }
       } else if (paymentAddress) {
         forwarding = { status: 'pending', address: paymentAddress.address, type: paymentAddress.type, amount: RECIPIENT_AMOUNT };
       } else {
-        forwarding = { status: 'held', reason: 'No payment address in Nostr profile', claimable: true, pendingTotal: payout.amount };
+        forwarding = { status: 'held', reason: 'No payment address found', claimable: true };
       }
     }
 
@@ -142,7 +197,7 @@ const httpServer = http.createServer(async (req, res) => {
       ok: true,
       event_id: event.id,
       added,
-      message: added ? 'Event published and broadcast' : 'Duplicate event',
+      message: added ? 'Event published, broadcast, and mirrored to public relays' : 'Duplicate event',
       ...(forwarding ? { forwarding } : {}),
     });
     return;
@@ -154,11 +209,10 @@ const httpServer = http.createServer(async (req, res) => {
 relay.attach(httpServer);
 
 httpServer.listen(PORT, () => {
-  console.log(`⚡ x402 Nostr Relay v0.5.0 on port ${PORT}`);
-  console.log(`   Wallet: ${getRelayAddress() || 'NOT CONFIGURED (set RELAY_PRIVATE_KEY)'}`);
-  console.log(`   WS:      ws://localhost:${PORT} (free reads)`);
-  console.log(`   Events:  http://localhost:${PORT}/api/events (x402 gated)`);
-  console.log(`   Payouts: http://localhost:${PORT}/api/payouts`);
+  console.log(`⚡ x402 Nostr Relay v0.6.0 on port ${PORT}`);
+  console.log(`   Wallet:  ${getRelayAddress() || 'NOT CONFIGURED'}`);
+  console.log(`   Storage: ${store.db ? 'SQLite (persistent)' : 'In-memory'}`);
+  console.log(`   Backup:  ${BACKUP_RELAYS.join(', ')}`);
 });
 
 export { relay, httpServer, store };

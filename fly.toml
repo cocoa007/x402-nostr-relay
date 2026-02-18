@@ -5,6 +5,11 @@ primary_region = "iad"
 
 [env]
   PORT = "8080"
+  DATA_DIR = "/data"
+
+[mounts]
+  source = "relay_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 8080
