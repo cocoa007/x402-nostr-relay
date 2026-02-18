@@ -11,7 +11,7 @@ import {
   build402Response, getPrice, getBasePrice, getRecipient,
   verifyPayment, RELAY_FEE, RECIPIENT_AMOUNT,
 } from '../src/x402.mjs';
-import { recordPendingPayout, getPendingPayouts } from '../src/messages.mjs';
+import { resolvePaymentAddress, recordPendingPayout, getPendingPayouts } from '../src/messages.mjs';
 
 const makeEvent = (overrides = {}) => ({
   id: 'abc123def456',

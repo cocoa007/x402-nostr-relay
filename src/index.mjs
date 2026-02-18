@@ -16,7 +16,7 @@ import {
   build402Response, extractPayment, verifyPayment,
   getPrice, getRecipient, RELAY_FEE, RECIPIENT_AMOUNT,
 } from './x402.mjs';
-import { lookupPaymentAddress, recordPendingPayout, getPendingPayouts } from './messages.mjs';
+import { resolvePaymentAddress, recordPendingPayout, getPendingPayouts } from './messages.mjs';
 import { getRelayAddress, getRelayBalance, forwardSbtc, isWalletConfigured } from './wallet.mjs';
 
 const PORT = parseInt(process.env.PORT || '8080');
@@ -47,7 +47,7 @@ const httpServer = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/') {
     json(res, 200, {
       name: 'x402-nostr-relay',
-      version: '0.4.0',
+      version: '0.5.0',
       description: 'Nostr relay with x402 sBTC payment gate. Events targeting a recipient (p tag) include a forwarding fee — recipient gets paid automatically.',
       supported_nips: [1],
       events_stored: store.size,
@@ -120,7 +120,7 @@ const httpServer = http.createServer(async (req, res) => {
     if (recipientHex) {
       let paymentAddress = null;
       try {
-        paymentAddress = await lookupPaymentAddress(recipientHex);
+        paymentAddress = await resolvePaymentAddress(recipientHex);
       } catch {}
 
       const payout = recordPendingPayout(recipientHex, paymentAddress, RECIPIENT_AMOUNT, event.id);
@@ -154,7 +154,7 @@ const httpServer = http.createServer(async (req, res) => {
 relay.attach(httpServer);
 
 httpServer.listen(PORT, () => {
-  console.log(`⚡ x402 Nostr Relay v0.4.0 on port ${PORT}`);
+  console.log(`⚡ x402 Nostr Relay v0.5.0 on port ${PORT}`);
   console.log(`   Wallet: ${getRelayAddress() || 'NOT CONFIGURED (set RELAY_PRIVATE_KEY)'}`);
   console.log(`   WS:      ws://localhost:${PORT} (free reads)`);
   console.log(`   Events:  http://localhost:${PORT}/api/events (x402 gated)`);

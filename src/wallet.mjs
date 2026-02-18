@@ -1,8 +1,8 @@
 /**
  * Relay wallet — sends sBTC forwarding payments to recipients.
  * 
- * The relay holds a private key and uses it to sign sBTC transfer
- * contract calls, forwarding the recipient's share after event payment.
+ * Uses sponsored transactions (fee=0) so the relay wallet
+ * needs no STX for gas. The sponsor relay pays the fee.
  */
 
 import pkg from '@stacks/transactions';
@@ -12,11 +12,10 @@ const {
   getAddressFromPrivateKey,
   uintCV,
   standardPrincipalCV,
+  noneCV,
   PostConditionMode,
   AnchorMode,
   STACKS_MAINNET,
-  getNonce,
-  bufferCV,
 } = pkg;
 
 const STACKS_API = process.env.STACKS_API || 'https://api.mainnet.hiro.so';
@@ -52,8 +51,6 @@ export async function getRelayBalance() {
     const resp = await fetch(`${STACKS_API}/extended/v1/address/${addr}/balances`);
     if (!resp.ok) return 0;
     const data = await resp.json();
-
-    // Look for sBTC in fungible tokens
     for (const [key, token] of Object.entries(data.fungible_tokens || {})) {
       if (key.includes('sbtc')) {
         return parseInt(token.balance || '0');
@@ -66,7 +63,8 @@ export async function getRelayBalance() {
 }
 
 /**
- * Forward sBTC to a recipient's STX address.
+ * Forward sBTC to a recipient's STX address using sponsored transaction.
+ * No STX needed — the sponsor relay pays the fee.
  * Returns { success, txId, error }.
  */
 export async function forwardSbtc(recipientStxAddress, amountSats) {
@@ -82,7 +80,7 @@ export async function forwardSbtc(recipientStxAddress, amountSats) {
     const nonceData = await nonceResp.json();
     const nonce = nonceData.possible_next_nonce;
 
-    // Build sBTC transfer contract call
+    // Build sBTC transfer contract call with sponsored=true, fee=0
     const txOptions = {
       contractAddress: SBTC_CONTRACT.address,
       contractName: SBTC_CONTRACT.name,
@@ -91,24 +89,27 @@ export async function forwardSbtc(recipientStxAddress, amountSats) {
         uintCV(amountSats),
         standardPrincipalCV(senderAddress),
         standardPrincipalCV(recipientStxAddress),
-        bufferCV(Buffer.from('x402-relay-forward', 'utf8')),
+        noneCV(), // memo
       ],
       senderKey: RELAY_KEY,
       network: STACKS_MAINNET,
       anchorMode: AnchorMode.Any,
       postConditionMode: PostConditionMode.Allow,
       nonce,
-      fee: 2000, // 2000 microSTX fee
+      fee: 0,          // sponsored — no fee
+      sponsored: true,  // marks tx as sponsored
     };
 
     const tx = await makeContractCall(txOptions);
+
+    // Broadcast — Hiro's API handles sponsored txs
     const result = await broadcastTransaction({ transaction: tx, network: STACKS_MAINNET });
 
     if (result.error) {
       return { success: false, error: result.error, reason: result.reason };
     }
 
-    return { success: true, txId: result.txid || result };
+    return { success: true, txId: typeof result === 'string' ? result : result.txid };
   } catch (err) {
     return { success: false, error: err.message };
   }
