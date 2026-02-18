@@ -8,6 +8,15 @@ import { matchFilter, matchFilters } from '../src/filters.mjs';
 import { EventStore } from '../src/store.mjs';
 import { Relay } from '../src/relay.mjs';
 import { build402Response, getPrice, verifyPayment } from '../src/x402.mjs';
+import {
+  npubToHex,
+  buildMessage402Response,
+  recordPendingPayout,
+  getPendingPayouts,
+  TOTAL_PRICE,
+  RELAY_FEE,
+  RECIPIENT_AMOUNT,
+} from '../src/messages.mjs';
 
 const makeEvent = (overrides = {}) => ({
   id: 'abc123def456',
@@ -190,6 +199,51 @@ describe('Relay', () => {
       JSON.parse(ws.sent[0]),
       ['OK', 'abc123def456', false, 'payment-required: publish via HTTP POST /api/events']
     );
+  });
+});
+
+describe('messages', () => {
+  it('decodes npub to hex correctly', () => {
+    // My own npub for testing
+    const hex = npubToHex('npub19drq8533690hw80d8ekpacjs67dan2y4pka09emqzh2mkhr9uxvqd4k3nn');
+    assert.equal(hex, '2b4603d231d15f771ded3e6c1ee250d79bd9a8950dbaf2e76015d5bb5c65e198');
+  });
+
+  it('returns null for invalid npub', () => {
+    assert.equal(npubToHex('invalid'), null);
+    assert.equal(npubToHex('npub1xyz'), null);
+    assert.equal(npubToHex(null), null);
+  });
+
+  it('pricing is 105 sats total (5 fee + 100 recipient)', () => {
+    assert.equal(TOTAL_PRICE, 105);
+    assert.equal(RELAY_FEE, 5);
+    assert.equal(RECIPIENT_AMOUNT, 100);
+  });
+
+  it('builds 402 response for messages', () => {
+    const npub = 'npub19drq8533690hw80d8ekpacjs67dan2y4pka09emqzh2mkhr9uxvqd4k3nn';
+    const resp = buildMessage402Response(npub);
+    assert.equal(resp.status, 402);
+    assert.equal(resp.body.totalPrice, 105);
+    assert.equal(resp.body.breakdown.recipientAmount, 100);
+    assert.equal(resp.body.breakdown.relayFee, 5);
+    const payment = JSON.parse(resp.headers['X-Payment']);
+    assert.equal(payment.maxAmountRequired, '105');
+  });
+
+  it('records and retrieves pending payouts', () => {
+    const hex = '2b4603d231d15f771ded3e6c1ee250d79bd9a8950dbaf2e76015d5bb5c65e198';
+    const npub = 'npub19drq8533690hw80d8ekpacjs67dan2y4pka09emqzh2mkhr9uxvqd4k3nn';
+    
+    recordPendingPayout(hex, npub, null, 'msg-001');
+    recordPendingPayout(hex, npub, null, 'msg-002');
+    
+    const payouts = getPendingPayouts();
+    const entry = payouts.find(p => p.pubkey === hex);
+    assert.ok(entry);
+    assert.equal(entry.amount, 200); // 100 + 100
+    assert.deepEqual(entry.messages, ['msg-001', 'msg-002']);
   });
 });
 
