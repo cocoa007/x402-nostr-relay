@@ -163,7 +163,7 @@ describe('x402', () => {
         tx_status: 'success',
         tx_type: 'token_transfer',
         token_transfer: {
-          recipient_address: 'SP16H0KE0BPR4XNQ64115V5Y1V3XTPGMWG5YPC9TR',
+          recipient_address: 'SP3PME5Q8G3VJ7GAFBMNCRXJ28HFTBX74XZC70WZ7',
           amount: '1',
         },
       }),

@@ -9,8 +9,16 @@
     "test": "node --test tests/relay.test.mjs"
   },
   "dependencies": {
+    "@stacks/network": "^7.3.1",
+    "@stacks/transactions": "^7.3.1",
     "ws": "^8.16.0"
   },
-  "keywords": ["nostr", "x402", "sbtc", "relay", "bitcoin"],
+  "keywords": [
+    "nostr",
+    "x402",
+    "sbtc",
+    "relay",
+    "bitcoin"
+  ],
   "license": "MIT"
 }

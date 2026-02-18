@@ -10,7 +10,8 @@
  * is added to the price and forwarded to the recipient.
  */
 
-const PAY_TO = process.env.PAY_TO || 'SP16H0KE0BPR4XNQ64115V5Y1V3XTPGMWG5YPC9TR';
+// PAY_TO: set via env (should match the relay wallet address)
+const PAY_TO = process.env.PAY_TO || 'SP3PME5Q8G3VJ7GAFBMNCRXJ28HFTBX74XZC70WZ7';
 const STACKS_API = process.env.STACKS_API || 'https://api.mainnet.hiro.so';
 
 const RELAY_FEE = 5;          // sats — base relay fee for any event
