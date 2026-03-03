@@ -10,6 +10,8 @@
  * is added to the price and forwarded to the recipient.
  */
 
+import { SBTC_CONTRACT } from './wallet.mjs';
+
 // PAY_TO: set via env (should match the relay wallet address)
 const PAY_TO = process.env.PAY_TO || 'SP3PME5Q8G3VJ7GAFBMNCRXJ28HFTBX74XZC70WZ7';
 const STACKS_API = process.env.STACKS_API || 'https://api.mainnet.hiro.so';
@@ -157,6 +159,10 @@ export async function verifyPayment(txId, requiredSats) {
       );
       if (!transferToUs) {
         return { valid: false, error: 'No sBTC transfer to relay found in tx' };
+      }
+      const SBTC_ASSET_ID = `${SBTC_CONTRACT.address}.${SBTC_CONTRACT.name}`;
+      if (transferToUs.asset?.asset_id !== SBTC_ASSET_ID) {
+        return { valid: false, error: `Invalid asset: expected sBTC (${SBTC_ASSET_ID})` };
       }
       paidAmount = parseAmount(transferToUs.asset?.amount);
       if (paidAmount == null) {

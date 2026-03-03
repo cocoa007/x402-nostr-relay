@@ -18,7 +18,7 @@ const STACKS_API = 'https://api.mainnet.hiro.so';
 const RELAY_KEY = process.env.RELAY_PRIVATE_KEY || '';
 
 // sBTC contract on mainnet
-const SBTC_CONTRACT = {
+export const SBTC_CONTRACT = {
   address: 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4',
   name: 'sbtc-token',
 };
