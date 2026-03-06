@@ -145,17 +145,14 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
 
-    // Verify payment
+    // Verify payment and persist the tx as used atomically (SQLite-backed)
     const totalPrice = getPrice(event);
-    const verification = await verifyPayment(txId, totalPrice);
+    const verification = await verifyPayment(txId, totalPrice, store);
 
     if (!verification.valid) {
       json(res, 402, { error: 'Payment verification failed', detail: verification.error });
       return;
     }
-
-    // Persist tx as used (SQLite)
-    store.markTxUsed?.(txId);
 
     // Store and broadcast locally
     const added = relay.injectEvent(event);

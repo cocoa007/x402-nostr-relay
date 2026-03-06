@@ -28,9 +28,6 @@ const BASE_PRICING = {
   default: 10,
 };
 
-/** Set of verified tx IDs to prevent replay */
-const usedTxIds = new Set();
-
 function normalizeTxId(txId) {
   if (typeof txId !== 'string') return '';
   return txId.trim().toLowerCase();
@@ -117,13 +114,13 @@ export function build402Response(event) {
 /**
  * Verify an sBTC payment transaction on the Stacks API.
  */
-export async function verifyPayment(txId, requiredSats) {
+export async function verifyPayment(txId, requiredSats, store) {
   const normalizedTxId = normalizeTxId(txId);
   if (!normalizedTxId) {
     return { valid: false, error: 'Missing transaction ID' };
   }
 
-  if (usedTxIds.has(normalizedTxId)) {
+  if (store?.isUsedTx(normalizedTxId)) {
     return { valid: false, error: 'Transaction already used' };
   }
 
@@ -176,7 +173,7 @@ export async function verifyPayment(txId, requiredSats) {
       return { valid: false, error: `Insufficient payment: ${paidAmount} < ${minimumAmount}` };
     }
 
-    usedTxIds.add(normalizedTxId);
+    store?.markTxUsed(normalizedTxId);
     return { valid: true };
   } catch (err) {
     return { valid: false, error: `Verification failed: ${err.message}` };
